@@ -149,7 +149,7 @@ abstract class AbstractKQueueChannel extends AbstractChannel implements UnixChan
     }
 
     @Override
-    protected void doDeregister() throws Exception {
+    protected void doDeRegister() throws Exception {
         ((KQueueEventLoop) eventLoop()).remove(this);
 
         // As unregisteredFilters() may have not been called because isOpen() returned false we just set both filters

@@ -180,7 +180,7 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         synchronized (this) {
             addListener0(listener);
         }
-
+//        System.out.println("thread: "+Thread.currentThread().getName()+ "isDone: "+isDone());
         if (isDone()) {
             notifyListeners();
         }
@@ -633,6 +633,8 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         if (RESULT_UPDATER.compareAndSet(this, null, objResult) ||
             RESULT_UPDATER.compareAndSet(this, UNCANCELLABLE, objResult)) {
             if (checkNotifyWaiters()) {
+                //in reactor thread
+                ////回调注册在promise上的listeners
                 notifyListeners();
             }
             return true;

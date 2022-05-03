@@ -173,6 +173,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 } else if (handler instanceof ChannelInboundHandlerAdapter) {
                     ((ChannelInboundHandlerAdapter) handler).channelRegistered(this);
                 } else {
+                    //获取handler，然后讲自己传进去
+                    //在AbstractChannelHandlerContext#findContextInbound获取下一个
                     ((ChannelInboundHandler) handler).channelRegistered(this);
                 }
             } catch (Throwable t) {
@@ -603,6 +605,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 } else if (handler instanceof ChannelOutboundHandlerAdapter) {
                     ((ChannelOutboundHandlerAdapter) handler).bind(this, localAddress, promise);
                 } else {
+                    //HeadContext
                     ((ChannelOutboundHandler) handler).bind(this, localAddress, promise);
                 }
             } catch (Throwable t) {
@@ -866,18 +869,22 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     @Override
     public ChannelFuture write(final Object msg, final ChannelPromise promise) {
         write(msg, false, promise);
-
         return promise;
     }
 
     void invokeWrite(Object msg, ChannelPromise promise) {
+//        invokeHandler() 方法的目的就是为了确定 ChannelHandler 是否被正确的初始化。
         if (invokeHandler()) {
             invokeWrite0(msg, promise);
         } else {
+            // 当前channelHandler虽然添加到pipeline中，但是并没有调用handlerAdded
+            // 所以不能调用当前channelHandler中的回调方法，只能继续向前传递write事件
             write(msg, promise);
         }
     }
 
+//    这里我们看到在 write 事件的传播过程中如果发生异常，那么 write 事件就会停止在 pipeline 中传播，
+//    并通知注册的 ChannelFutureListener。
     private void invokeWrite0(Object msg, ChannelPromise promise) {
         try {
             // DON'T CHANGE
@@ -892,16 +899,21 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             } else if (handler instanceof ChannelOutboundHandlerAdapter) {
                 ((ChannelOutboundHandlerAdapter) handler).write(this, msg, promise);
             } else {
+                //调用当前ChannelHandler中的write方法
+                //还会调用ChannelContext.write 传播事件
                 ((ChannelOutboundHandler) handler).write(this, msg, promise);
             }
         } catch (Throwable t) {
+            //通知channelFuture
             notifyOutboundHandlerException(t, promise);
         }
     }
 
     @Override
     public ChannelHandlerContext flush() {
+        //向前查找覆盖flush方法的Outbound类型的ChannelHandler
         final AbstractChannelHandlerContext next = findContextOutbound(MASK_FLUSH);
+        //获取执行ChannelHandler的executor,在初始化pipeline的时候设置，默认为Reactor线程
         EventExecutor executor = next.executor();
         if (executor.inEventLoop()) {
             next.invokeFlush();
@@ -920,6 +932,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         if (invokeHandler()) {
             invokeFlush0();
         } else {
+            //如果该ChannelHandler并没有加入到pipeline中则继续向前传递flush事件
             flush();
         }
     }
@@ -960,6 +973,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         }
     }
 
+    //最终会传播到headContext
     private void write(Object msg, boolean flush, ChannelPromise promise) {
         ObjectUtil.checkNotNull(msg, "msg");
         try {
@@ -973,17 +987,28 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             throw e;
         }
 
+        //flush = true 表示channelHandler中调用的是writeAndFlush方法，这里需要找到pipeline中覆盖write或者flush方法的channelHandler
+        //flush = false 表示调用的是write方法，只需要找到pipeline中覆盖write方法的channelHandler
         final AbstractChannelHandlerContext next = findContextOutbound(flush ?
                 (MASK_WRITE | MASK_FLUSH) : MASK_WRITE);
+
+        //用于检查内存泄露
         final Object m = pipeline.touch(msg, next);
+
+        //获取pipeline中下一个要被执行的channelHandler的executor
         EventExecutor executor = next.executor();
+
+        //确保OutBound事件由ChannelHandler指定的executor执行
+//        如果不特殊指定，那么执行该 ChannelHandler 的executor默认为该 Channel 绑定的 Reactor 线程。
         if (executor.inEventLoop()) {
+            //如果当前线程正是channelHandler指定的executor则直接执行
             if (flush) {
                 next.invokeWriteAndFlush(m, promise);
             } else {
                 next.invokeWrite(m, promise);
             }
         } else {
+            //如果当前线程不是ChannelHandler指定的executor,则封装成异步任务提交给指定executor执行，注意这里的executor不一定是reactor线程。
             final WriteTask task = WriteTask.newInstance(next, m, promise, flush);
             if (!safeExecute(executor, task, promise, m, !flush)) {
                 // We failed to submit the WriteTask. We need to cancel it so we decrement the pending bytes
@@ -1075,22 +1100,30 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     }
 
     private AbstractChannelHandlerContext findContextOutbound(int mask) {
+        //mask标识查询什么样的channelHandle
         AbstractChannelHandlerContext ctx = this;
+        //获取当前ChannelHandler的executor
         EventExecutor currentExecutor = executor();
         do {
+            //tailCtx -> headCtx
+            //并且是OUT_BOUND
             ctx = ctx.prev;
         } while (skipContext(ctx, currentExecutor, mask, MASK_ONLY_OUTBOUND));
         return ctx;
     }
 
+    //判断前一个ChannelHandler是否具有响应Write事件的资格
     private static boolean skipContext(
             AbstractChannelHandlerContext ctx, EventExecutor currentExecutor, int mask, int onlyMask) {
         // Ensure we correctly handle MASK_EXCEPTION_CAUGHT which is not included in the MASK_EXCEPTION_CAUGHT
+        //判断下一个 ChannelHandler 类型是否正确，比如我们正在传播 inbound 类事件，
+        // 下一个却是一个 ChannelOutboundHandler ，那么肯定是要跳过的，继续向后查找
         return (ctx.executionMask & (onlyMask | mask)) == 0 ||
                 // We can only skip if the EventExecutor is the same as otherwise we need to ensure we offload
                 // everything to preserve ordering.
                 //
                 // See https://github.com/netty/netty/issues/10067
+                //判断该 ChannelHandler 是否对正在传播的 mask 事件感兴趣
                 (ctx.executor() == currentExecutor && (ctx.executionMask & mask) == 0);
     }
 
@@ -1134,6 +1167,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     final void callHandlerRemoved() throws Exception {
         try {
             // Only call handlerRemoved(...) if we called handlerAdded(...) before.
+//            只有当 ChannelHanler 的 handlerAdded 方法被回调之后，
+//            那么在 ChannelHanler 被从 pipeline 中删除的时候它的 handlerRemoved 方法才可以被回调。
             if (handlerState == ADD_COMPLETE) {
                 handler().handlerRemoved(this);
             }
@@ -1153,6 +1188,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
      */
     private boolean invokeHandler() {
         // Store in local variable to reduce volatile reads.
+        // 这里是一个优化点，netty 用一个局部变量保存 handlerState
+        // 目的是减少 volatile 变量 handlerState 的读取次数
         int handlerState = this.handlerState;
         return handlerState == ADD_COMPLETE || (!ordered && handlerState == ADD_PENDING);
     }

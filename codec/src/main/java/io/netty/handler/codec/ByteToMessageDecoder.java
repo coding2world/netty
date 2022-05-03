@@ -280,10 +280,14 @@ public abstract class ByteToMessageDecoder extends ChannelInboundHandlerAdapter 
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        //Only for ByteBuf
+        //开始读取一个数据包
         if (msg instanceof ByteBuf) {
             selfFiredChannelRead = true;
+            //收集解码后的数据包
             CodecOutputList out = CodecOutputList.newInstance();
             try {
+                //收集byteBuf
                 first = cumulation == null;
                 cumulation = cumulator.cumulate(ctx.alloc(),
                         first ? Unpooled.EMPTY_BUFFER : cumulation, (ByteBuf) msg);
@@ -448,10 +452,13 @@ public abstract class ByteToMessageDecoder extends ChannelInboundHandlerAdapter 
      */
     protected void callDecode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
         try {
+            //如果当前解码器有数据，尝试解码
             while (in.isReadable()) {
                 final int outSize = out.size();
 
+                //如果有解码的数据
                 if (outSize > 0) {
+                    //传播解码的数据到后面的channelHandler
                     fireChannelRead(ctx, out, outSize);
                     out.clear();
 
@@ -465,7 +472,10 @@ public abstract class ByteToMessageDecoder extends ChannelInboundHandlerAdapter 
                     }
                 }
 
+                //记录解码之前缓冲区的可读字节数
                 int oldInputLength = in.readableBytes();
+
+                //执行解码操作
                 decodeRemovalReentryProtection(ctx, in, out);
 
                 // Check if this handler was removed before continuing the loop.
@@ -476,14 +486,18 @@ public abstract class ByteToMessageDecoder extends ChannelInboundHandlerAdapter 
                     break;
                 }
 
+                //如果没有解码出数据
                 if (out.isEmpty()) {
+                    //并且可读性数据没有变化，说明解码器没有解码出数据，跳出循环
                     if (oldInputLength == in.readableBytes()) {
                         break;
                     } else {
+                        // ??
                         continue;
                     }
                 }
 
+                //没有读取数据，并且解码出了数据
                 if (oldInputLength == in.readableBytes()) {
                     throw new DecoderException(
                             StringUtil.simpleClassName(getClass()) +

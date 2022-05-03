@@ -173,13 +173,13 @@ abstract class AbstractEpollChannel extends AbstractChannel implements UnixChann
                 // See https://github.com/netty/netty/issues/7159
                 EventLoop loop = eventLoop();
                 if (loop.inEventLoop()) {
-                    doDeregister();
+                    doDeRegister();
                 } else {
                     loop.execute(new Runnable() {
                         @Override
                         public void run() {
                             try {
-                                doDeregister();
+                                doDeRegister();
                             } catch (Throwable cause) {
                                 pipeline().fireExceptionCaught(cause);
                             }
@@ -213,7 +213,7 @@ abstract class AbstractEpollChannel extends AbstractChannel implements UnixChann
     }
 
     @Override
-    protected void doDeregister() throws Exception {
+    protected void doDeRegister() throws Exception {
         ((EpollEventLoop) eventLoop()).remove(this);
     }
 

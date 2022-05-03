@@ -112,8 +112,10 @@ public final class InternalThreadLocalMap extends UnpaddedInternalThreadLocalMap
     public static InternalThreadLocalMap get() {
         Thread thread = Thread.currentThread();
         if (thread instanceof FastThreadLocalThread) {
+            //thread直接持有InternalThreadLocalMap
             return fastGet((FastThreadLocalThread) thread);
         } else {
+            //thread通过jdk的ThreadLocal持持有InternalThreadLocalMap
             return slowGet();
         }
     }

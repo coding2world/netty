@@ -93,7 +93,9 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
      * Create a new instance using the given {@link ServerSocketChannel}.
      */
     public NioServerSocketChannel(ServerSocketChannel channel) {
+        //父类AbstractNioChannel中保存JDK NIO原生ServerSocketChannel以及要监听的事件OP_ACCEPT
         super(null, channel, SelectionKey.OP_ACCEPT);
+        //DefaultChannelConfig中设置用于Channel接收数据用的buffer->AdaptiveRecvByteBufAllocator
         config = new NioServerSocketChannelConfig(this, javaChannel().socket());
     }
 
@@ -154,6 +156,9 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
         SocketChannel ch = SocketUtils.accept(javaChannel());
 
         try {
+            //由于我们在创建NioServerSocketChannel的时候，会将JDK NIO 原生的ServerSocketChannel设置为非阻塞，
+            // 所以这里当ServerSocketChannel上有客户端连接时就会直接创建SocketChannel，
+            // 如果此时并没有客户端连接时accept调用就会立刻返回null并不会阻塞。
             if (ch != null) {
                 buf.add(new NioSocketChannel(this, ch));
                 return 1;

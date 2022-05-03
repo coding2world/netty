@@ -35,7 +35,11 @@ import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
  */
 public final class WriteBufferWaterMark {
 
+//    每个 Channel 中的待发送数据如果超过 64 KB。Channel 的状态就会变为不可写状态。
+//    当内存占用量低于 32 KB时，Channel 的状态会再次变为可写状态
+//   64 KB
     private static final int DEFAULT_LOW_WATER_MARK = 32 * 1024;
+    //32 kb
     private static final int DEFAULT_HIGH_WATER_MARK = 64 * 1024;
 
     public static final WriteBufferWaterMark DEFAULT =

@@ -283,7 +283,7 @@ public class LocalChannel extends AbstractChannel {
     }
 
     @Override
-    protected void doDeregister() throws Exception {
+    protected void doDeRegister() throws Exception {
         // Just remove the shutdownHook as this Channel may be closed later or registered to another EventLoop
         ((SingleThreadEventExecutor) eventLoop()).removeShutdownHook(shutdownHook);
     }

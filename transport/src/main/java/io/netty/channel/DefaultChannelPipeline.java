@@ -57,6 +57,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         }
     };
 
+    //原子更新estimatorHandle字段
     private static final AtomicReferenceFieldUpdater<DefaultChannelPipeline, MessageSizeEstimator.Handle> ESTIMATOR =
             AtomicReferenceFieldUpdater.newUpdater(
                     DefaultChannelPipeline.class, MessageSizeEstimator.Handle.class, "estimatorHandle");
@@ -69,6 +70,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     private final boolean touch = ResourceLeakDetector.isEnabled();
 
     private Map<EventExecutorGroup, EventExecutor> childExecutors;
+    //计算要发送msg大小的handler
     private volatile MessageSizeEstimator.Handle estimatorHandle;
     private boolean firstRegistration = true;
 
@@ -103,6 +105,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     final MessageSizeEstimator.Handle estimatorHandle() {
         MessageSizeEstimator.Handle handle = estimatorHandle;
         if (handle == null) {
+            //MessageSizeEstimator DEFAULT_MSG_SIZE_ESTIMATOR = DefaultMessageSizeEstimator.DEFAULT;
             handle = channel.config().getMessageSizeEstimator().newHandle();
             if (!ESTIMATOR.compareAndSet(this, null, handle)) {
                 handle = estimatorHandle;
@@ -198,27 +201,42 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     public final ChannelPipeline addLast(EventExecutorGroup group, String name, ChannelHandler handler) {
         final AbstractChannelHandlerContext newCtx;
         synchronized (this) {
+            //检查同一个channelHandler实例是否允许被重复添加
             checkMultiplicity(handler);
 
             newCtx = newContext(group, filterName(name, handler), handler);
+
+            //将channelHandelrContext插入到pipeline中的末尾处。双向链表操作
+            //此时channelHandler的状态还是ADD_PENDING，只有当channelHandler的handlerAdded方法被回调后，状态才会为ADD_COMPLETE
 
             addLast0(newCtx);
 
             // If the registered is false it means that the channel was not registered on an eventLoop yet.
             // In this case we add the context to the pipeline and add a task that will call
             // ChannelHandler.handlerAdded(...) once the channel is registered.
+
+            ////如果当前channel还没有向reactor注册，则将handlerAdded方法的回调添加进pipeline的任务队列中
+
             if (!registered) {
+                //这里主要是用来处理ChannelInitializer的情况
+                //设置channelHandler的状态为ADD_PENDING 即等待添加,当状态变为ADD_COMPLETE时 channelHandler中的handlerAdded会被回调
                 newCtx.setAddPending();
+
+//                /向pipeline中添加PendingHandlerAddedTask任务，在任务中回调handlerAdded
+                //当channel注册到reactor后，pipeline中的pendingHandlerCallbackHead任务链表会被挨个执行
                 callHandlerCallbackLater(newCtx, true);
                 return this;
             }
 
+            //如果当前channel已经向reactor注册成功，那么就直接回调channelHandler中的handlerAddded方法
             EventExecutor executor = newCtx.executor();
             if (!executor.inEventLoop()) {
+                //这里需要确保channelHandler中handlerAdded方法的回调是在channel指定的executor中
                 callHandlerAddedInEventLoop(newCtx, executor);
                 return this;
             }
         }
+        //回调channelHandler中的handlerAddded方法
         callHandlerAdded0(newCtx);
         return this;
     }
@@ -452,16 +470,21 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         assert ctx != head && ctx != tail;
 
         synchronized (this) {
+            //从pipeline的双向列表中删除指定channelHandler对应的context
             atomicRemoveFromHandlerList(ctx);
 
             // If the registered is false it means that the channel was not registered on an eventloop yet.
             // In this case we remove the context from the pipeline and add a task that will call
             // ChannelHandler.handlerRemoved(...) once the channel is registered.
+            //如果此时channel还未向reactor注册，则通过向pipeline中添加PendingHandlerRemovedTask任务
+            //在注册之后回调channelHandelr中的handlerRemoved方法
             if (!registered) {
                 callHandlerCallbackLater(ctx, false);
                 return ctx;
             }
 
+            //channelHandelr从pipeline中删除后，需要回调其handlerRemoved方法
+            //需要确保handlerRemoved方法在channelHandelr指定的executor中进行
             EventExecutor executor = ctx.executor();
             if (!executor.inEventLoop()) {
                 executor.execute(new Runnable() {
@@ -594,6 +617,9 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     private static void checkMultiplicity(ChannelHandler handler) {
         if (handler instanceof ChannelHandlerAdapter) {
             ChannelHandlerAdapter h = (ChannelHandlerAdapter) handler;
+            //只有标注@Sharable注解的channelHandler，才被允许同一个实例被添加进多个pipeline中
+            //注意：标注@Sharable之后，一个channelHandler的实例可以被添加到多个channel对应的pipeline中
+            //可能被多线程执行，需要确保线程安全
             if (!h.isSharable() && h.added) {
                 throw new ChannelPipelineException(
                         h.getClass().getName() +
@@ -1120,6 +1146,10 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         assert !registered;
 
         PendingHandlerCallback task = added ? new PendingHandlerAddedTask(ctx) : new PendingHandlerRemovedTask(ctx);
+
+        //任务链表头节点
+        //等到 channel 向 reactor 注册之后，reactor 线程会挨个执行 pipeline 中任务列表中的任务。
+       //PendingHandlerAddedTask 任务负责回调 ChannelHandler 中的 handlerAdded 方法
         PendingHandlerCallback pending = pendingHandlerCallbackHead;
         if (pending == null) {
             pendingHandlerCallbackHead = task;
@@ -1359,11 +1389,14 @@ public class DefaultChannelPipeline implements ChannelPipeline {
             unsafe.beginRead();
         }
 
+//        write 事件最终会在 pipeline 中传播到 HeadContext 里并回调 HeadContext 的 write 方法。
+//        并在 write 回调中调用 channel 的 unsafe 类执行底层的 write 操作。
+//        这里正是 write 事件在 pipeline 中的传播终点。
         @Override
         public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
             unsafe.write(msg, promise);
         }
-
+//write事件最终会在这里来
         @Override
         public void flush(ChannelHandlerContext ctx) {
             unsafe.flush();
@@ -1392,8 +1425,11 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) {
+            //pipeline中继续向后传播channelActive事件
             ctx.fireChannelActive();
 
+            //如果是autoRead 则自动触发read事件传播
+            //在read回调函数中 触发OP_ACCEPT注册
             readIfIsAutoRead();
         }
 
@@ -1416,6 +1452,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
         private void readIfIsAutoRead() {
             if (channel.config().isAutoRead()) {
+                //如果是autoRead 则触发read事件传播
                 channel.read();
             }
         }

@@ -382,6 +382,10 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         boolean selected = false;
         for (;;) {
             try {
+                //IO事件为0
+                //当绑定操作完成后，在去向SelectionKey添加感兴趣的IO事件OP_ACCEPT事件。
+                //AbstractNioChannel.doBeginRead()
+                //将NioServerSocketChannel添加上去
                 selectionKey = javaChannel().register(eventLoop().unwrappedSelector(), 0, this);
                 return;
             } catch (CancelledKeyException e) {
@@ -400,7 +404,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
     }
 
     @Override
-    protected void doDeregister() throws Exception {
+    protected void doDeRegister() throws Exception {
         eventLoop().cancel(selectionKey());
     }
 
@@ -414,8 +418,14 @@ public abstract class AbstractNioChannel extends AbstractChannel {
 
         readPending = true;
 
+        /**
+         * 1：ServerSocketChannel 初始化时 readInterestOp设置的是OP_ACCEPT事件
+         * 2：SocketChannel 初始化时 readInterestOp设置的是OP_READ事件
+         * */
         final int interestOps = selectionKey.interestOps();
+        //interestOps & readInterestOp == 0 说明两者不相等
         if ((interestOps & readInterestOp) == 0) {
+            //注册监听OP_ACCEPT或者OP_READ事件
             selectionKey.interestOps(interestOps | readInterestOp);
         }
     }

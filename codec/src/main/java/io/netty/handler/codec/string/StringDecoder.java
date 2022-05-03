@@ -26,6 +26,7 @@ import io.netty.handler.codec.MessageToMessageDecoder;
 import io.netty.util.internal.ObjectUtil;
 
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
 import java.util.List;
 
 /**
@@ -57,6 +58,7 @@ public class StringDecoder extends MessageToMessageDecoder<ByteBuf> {
 
     // TODO Use CharsetDecoder instead.
     private final Charset charset;
+
 
     /**
      * Creates a new instance with the current system character set.

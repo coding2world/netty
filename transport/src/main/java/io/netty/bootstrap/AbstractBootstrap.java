@@ -16,16 +16,7 @@
 
 package io.netty.bootstrap;
 
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.DefaultChannelPromise;
-import io.netty.channel.EventLoop;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.ReflectiveChannelFactory;
+import io.netty.channel.*;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.GlobalEventExecutor;
@@ -34,6 +25,7 @@ import io.netty.util.internal.SocketUtils;
 import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.logging.InternalLogger;
 
+import javax.sound.midi.Soundbank;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -280,26 +272,48 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
      * Create a new {@link Channel} and bind it.
      */
     public ChannelFuture bind(SocketAddress localAddress) {
-        validate();
         return doBind(ObjectUtil.checkNotNull(localAddress, "localAddress"));
     }
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
+        //1. 创建channel
+        //2. channel绑定到主线程组中(channel持有eventLoop, eventLoop持有selector) ， 将java channel注册到selector上
+        //3. 初始化pipline, 触发channelRegister事件
+        //4. 绑定端口
+        //5. Pipeline中触发传播ChannelActive事件, 注册OP_ACCEPT事件
+        //创建和初始化
         final ChannelFuture regFuture = initAndRegister();
         final Channel channel = regFuture.channel();
         if (regFuture.cause() != null) {
             return regFuture;
         }
 
+//        DefaultChannelPromise
+        //main thread exit to here
+        //在io.netty.channel.AbstractChannel.AbstractUnsafe.register0中设置的result是null
+        // safeSetSuccess(promise);return trySuccess(null); setValue0(result == null ? SUCCESS : result);
+        // return result != null && result != UNCANCELLABLE; 所以这里判断为false ?
+
+//        System.out.println("in bootstrap register done = "+ regFuture.isDone());
         if (regFuture.isDone()) {
             // At this point we know that the registration was complete and successful.
             ChannelPromise promise = channel.newPromise();
+            //注册成功 提交端口绑定事件
             doBind0(regFuture, channel, localAddress, promise);
             return promise;
         } else {
+//            System.out.println("register is done: "+ regFuture.isDone());
+            //2. mainExit main线程推出到这里
+            //AbstractUnsafe#register0 -> safeSetSuccess(promise);
+            //ChannelFutureListener#operationComplete
             // Registration future is almost always fulfilled already, but just in case it's not.
             final PendingRegistrationPromise promise = new PendingRegistrationPromise(channel);
             regFuture.addListener(new ChannelFutureListener() {
+                //如果此时注册操作没有完成，则向regFuture添加operationComplete回调函数，注册成功后回调。
+                //Listener会在register完成之后回调。
+                //safeSetSuccess()-> notifyListeners();
+                // 而doBind0()会被封装成任务，在Reactor执行完register()之后执行
+
                 @Override
                 public void operationComplete(ChannelFuture future) throws Exception {
                     Throwable cause = future.cause();
@@ -323,7 +337,10 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     final ChannelFuture initAndRegister() {
         Channel channel = null;
         try {
+            //创建channel, channel (jdk), pipline, channelConfig , unsafe, allocator
             channel = channelFactory.newChannel();
+
+            //初始化配置
             init(channel);
         } catch (Throwable t) {
             if (channel != null) {
@@ -336,7 +353,12 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             return new DefaultChannelPromise(new FailedChannel(), GlobalEventExecutor.INSTANCE).setFailure(t);
         }
 
+        // register channel to main Reactor
+        //important !!!
+//        MultithreadEventLoopGroup.register(io.netty.channel.Channel)
+        //DefaultChannelPromise
         ChannelFuture regFuture = config().group().register(channel);
+        //1. mainExit main线程推出到这里
         if (regFuture.cause() != null) {
             if (channel.isRegistered()) {
                 channel.close();

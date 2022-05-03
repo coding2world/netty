@@ -97,14 +97,18 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
     protected class NioByteUnsafe extends AbstractNioUnsafe {
 
         private void closeOnRead(ChannelPipeline pipeline) {
+            //判断服务端连接接收方向是否关闭，这里肯定是没有关闭的
             if (!isInputShutdown0()) {
                 if (isAllowHalfClosure(config())) {
+                    //TCP连接半关闭处理逻辑
                     shutdownInput();
                     pipeline.fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
                 } else {
+                   //如果不支持半关闭，则服务端直接调用close方法向客户端发送fin,结束close_wait状态进如last_ack状态
                     close(voidPromise());
                 }
             } else if (!inputClosedSeenErrorOnRead) {
+                //TCP连接半关闭处理逻辑
                 inputClosedSeenErrorOnRead = true;
                 pipeline.fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
             }
@@ -134,40 +138,75 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
         @Override
         public final void read() {
             final ChannelConfig config = config();
+
+//            处理半关闭相关代码
             if (shouldBreakReadReady(config)) {
                 clearReadPending();
                 return;
             }
             final ChannelPipeline pipeline = pipeline();
+            //    private volatile ByteBufAllocator allocator = ByteBufAllocator.DEFAULT(PooledByteBufAllocator);
             final ByteBufAllocator allocator = config.getAllocator();
+
+//            lastBytesRead < 0：表示客户端主动发起了连接关闭流程，Netty开始连接关闭处理流程
+//            lastBytesRead = 0：表示当前NioSocketChannel上的数据已经全部读取完毕，没有数据可读了
+//            当lastBytesRead > 0：表示在本次read loop中从NioSocketChannel中读取到了数据，
+//            会在NioSocketChannel的pipeline中触发ChannelRead事件。
+//            进而在pipeline中负责IO处理的ChannelHandelr中响应，处理网络请求。
+
+            //自适应ByteBuf分配器 AdaptiveRecvByteBufAllocator ,用于动态调节ByteBuf容量
+            //需要与具体的ByteBuf分配器配合使用 比如这里的PooledByteBufAllocator
+            //AdaptiveRecvByteBufAllocator 负责动态计算大小，PooledByteBufAllocator负责分配
+//            MaxMessageHandle
+            //private volatile RecvByteBufAllocator rcvBufAllocator (AdaptiveRecvByteBufAllocator);
             final RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle();
+
+            //allocHandler用于统计每次读取数据的大小，方便下次分配合适大小的ByteBuf
+            //重置清除上次的统计指标
             allocHandle.reset(config);
 
             ByteBuf byteBuf = null;
             boolean close = false;
             try {
                 do {
+                    //利用PooledByteBufAllocator分配合适 大小的byteBuf 初始大小为2048
+                    //AbstractByteBufAllocator
                     byteBuf = allocHandle.allocate(allocator);
+                    //记录本次读取了多少字节数
                     allocHandle.lastBytesRead(doReadBytes(byteBuf));
+                    //如果本次没有读取到任何字节，则退出循环 进行下一轮事件轮询
                     if (allocHandle.lastBytesRead() <= 0) {
                         // nothing was read. release the buffer.
                         byteBuf.release();
                         byteBuf = null;
                         close = allocHandle.lastBytesRead() < 0;
                         if (close) {
+                            //......表示客户端发起连接关闭.....
                             // There is nothing left to read as we received an EOF.
                             readPending = false;
                         }
                         break;
                     }
-
+                    //read loop读取数据次数+1
                     allocHandle.incMessagesRead(1);
                     readPending = false;
+                    //ChannelRead 每次读取都会触发
+                    //客户端NioSocketChannel的pipeline中触发ChannelRead事件
+
                     pipeline.fireChannelRead(byteBuf);
                     byteBuf = null;
+//                    是否结束本次read loop循
                 } while (allocHandle.continueReading());
 
+//                根据本轮read loop总共读取到的字节数totalBytesRead
+//                来决定是否对用于接收下一轮OP_READ事件数据的ByteBuffer进行扩容或者缩容。
                 allocHandle.readComplete();
+
+                //在NioSocketChannel的pipeline中触发ChannelReadComplete事件，表示一次read事件处理完毕
+                //但这并不表示 客户端发送来的数据已经全部读完，因为如果数据太多的话，
+                // 这里只会读取16次，剩下的会等到下次read事件到来后在处理
+
+                //ChannelReadComplete 读取完成或者16次才触发
                 pipeline.fireChannelReadComplete();
 
                 if (close) {
@@ -230,11 +269,18 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             }
         } else if (msg instanceof FileRegion) {
             FileRegion region = (FileRegion) msg;
+            //文件已经传输完毕
+            //表示当前 FileRegion 中的文件数据已经传输完毕。
+            // 那么在这种情况下本次 write loop 没有写入任何数据到 Socket ，所以返回 0 ，
+            // writeSpinCount - 0 意思就是本次 write loop 不算，继续循环
             if (region.transferred() >= region.count()) {
                 in.remove();
                 return 0;
             }
-
+            //零拷贝的方式传输文件
+            //系统调用为 sendFile 实现零拷贝网络文件的传输。
+            //表示本 write loop 中写入了一些数据到 Socket 中，会有返回 1，
+            // writeSpinCount - 1 减少一次 write loop 次数。
             long localFlushedAmount = doWriteFileRegion(region);
             if (localFlushedAmount > 0) {
                 in.progress(localFlushedAmount);
@@ -247,11 +293,17 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             // Should not reach here.
             throw new Error();
         }
+        //走到这里表示 此时Socket已经写不进去了 退出writeLoop，注册OP_WRITE事件
+//        表示当前 Socket 发送缓冲区已满，无法写入数据，那么就返回 WRITE_STATUS_SNDBUF_FULL = Integer.MAX_VALUE。
+//        writeSpinCount - Integer.MAX_VALUE 必然是负数，直接退出循环，
+//        向 Reactor 注册 OP_WRITE 事件并退出 flush 流程。等 Socket 发送缓冲区可写了，
+//        Reactor 会通知 channel 继续发送文件数据
         return WRITE_STATUS_SNDBUF_FULL;
     }
 
     @Override
     protected void doWrite(ChannelOutboundBuffer in) throws Exception {
+        //最大写入次数 默认为16 目的是为了保证SubReactor可以平均的处理注册其上的所有Channel
         int writeSpinCount = config().getWriteSpinCount();
         do {
             Object msg = in.current();
@@ -275,6 +327,8 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 return msg;
             }
 
+//            在网络数据传输的过程中，Netty为了减少数据从 堆内内存到堆外内存的拷贝以及缓解GC的压力
+//            所以这里必须采用 DirectByteBuffer 使用堆外内存来存放网络发送数据
             return newDirectBuffer(buf);
         }
 
@@ -287,16 +341,25 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
     }
 
     protected final void incompleteWrite(boolean setOpWrite) {
+        //注意：只有当 Socket 缓冲区已满导致无法写入时，Netty 才会去注册 OP_WRITE 事件。
+        // 这和我们之前介绍的 OP_ACCEPT 事件和 OP_READ 事件的注册时机是不同的。
         // Did not write completely.
         if (setOpWrite) {
+//            /这里处理还没写满16次 但是socket缓冲区已满写不进去的情况 注册write事件
+//            什么时候socket可写了， epoll会通知reactor线程继续写
             setOpWrite();
         } else {
             // It is possible that we have set the write OP, woken up by NIO because the socket is writable, and then
             // use our write quantum. In this case we no longer want to set the write OP because the socket is still
             // writable (as far as we know). We will find out next time we attempt to write if the socket is writable
             // and set the write OP if necessary.
+
+            // 这里处理的是socket缓冲区依然可写，但是写了16次还没写完，这时就不能在写了，
+            // reactor线程需要处理其他channel上的io事件
+            //因为此时socket是可写的，必须清除op_write事件，否则会一直不停地被通知
             clearOpWrite();
 
+            //如果本次writeLoop还没写完，则提交flushTask到reactor
             // Schedule flush again later so other tasks can be picked up in the meantime
             eventLoop().execute(flushTask);
         }

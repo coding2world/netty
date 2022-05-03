@@ -62,6 +62,7 @@ public abstract class AbstractEventExecutor extends AbstractExecutorService impl
 
     @Override
     public boolean inEventLoop() {
+        //SingleThreadEventExecutor
         return inEventLoop(Thread.currentThread());
     }
 

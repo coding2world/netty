@@ -51,11 +51,16 @@ public final class ThreadExecutorMap {
     public static Executor apply(final Executor executor, final EventExecutor eventExecutor) {
         ObjectUtil.checkNotNull(executor, "executor");
         ObjectUtil.checkNotNull(eventExecutor, "eventExecutor");
-        return new Executor() {
-            @Override
-            public void execute(final Runnable command) {
-                executor.execute(apply(command, eventExecutor));
-            }
+        //command 是reactor线程执行的主要方法，所有的逻辑都封装在这里
+//
+        return command -> {
+            // executor.execute is below
+            // called at SingleThreadEventExecutor.doStartThread
+//            public void execute(Runnable command) {
+//                threadFactory.newThread(command).start();
+//            }
+//            ThreadPerTaskExecutor
+            executor.execute(apply(command, eventExecutor));
         };
     }
 
@@ -66,16 +71,11 @@ public final class ThreadExecutorMap {
     public static Runnable apply(final Runnable command, final EventExecutor eventExecutor) {
         ObjectUtil.checkNotNull(command, "command");
         ObjectUtil.checkNotNull(eventExecutor, "eventExecutor");
-        return new Runnable() {
-            @Override
-            public void run() {
-                setCurrentEventExecutor(eventExecutor);
-                try {
-                    command.run();
-                } finally {
-                    setCurrentEventExecutor(null);
-                }
-            }
+        return () -> {
+            setCurrentEventExecutor(eventExecutor);
+            try {
+                command.run();
+            } finally { setCurrentEventExecutor(null); }
         };
     }
 

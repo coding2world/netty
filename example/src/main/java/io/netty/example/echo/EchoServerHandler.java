@@ -15,9 +15,13 @@
  */
 package io.netty.example.echo;
 
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+
+import javax.sound.midi.Soundbank;
 
 /**
  * Handler implementation for the echo server.
@@ -26,12 +30,35 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 public class EchoServerHandler extends ChannelInboundHandlerAdapter {
 
     @Override
+    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+        super.channelRegistered(ctx);
+    }
+
+    @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        ctx.write(msg);
+        //处理网络请求，比如解码,反序列化等操作
+//        ctx.write(msg);
+//        此处的msg就是Netty在read loop中从NioSocketChannel中读取到的ByteBuffer
+        //最终会传播到headContext
+
+        ChannelFuture future = ctx.write(msg);
+        future.addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) throws Exception {
+                Throwable cause = future.cause();
+                if (cause != null) {
+//                    处理异常情况
+                } else {
+//                    写入Socket成功后，Netty会通知到这里
+                }
+            }
+        });
     }
 
     @Override
     public void channelReadComplete(ChannelHandlerContext ctx) {
+//        .....本次OP_READ事件处理完毕.......
+//        ......决定是否向客户端响应处理结果......
         ctx.flush();
     }
 
@@ -41,4 +68,6 @@ public class EchoServerHandler extends ChannelInboundHandlerAdapter {
         cause.printStackTrace();
         ctx.close();
     }
+
+
 }

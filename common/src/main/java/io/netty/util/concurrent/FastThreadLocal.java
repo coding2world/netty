@@ -133,6 +133,8 @@ public class FastThreadLocal<V> {
      */
     @SuppressWarnings("unchecked")
     public final V get() {
+        //每一个threadLocal实例在使用的时候，先根据current thread获取线程的threadLocalMap
+        // 在根据map和index获取值
         InternalThreadLocalMap threadLocalMap = InternalThreadLocalMap.get();
         Object v = threadLocalMap.indexedVariable(index);
         if (v != InternalThreadLocalMap.UNSET) {

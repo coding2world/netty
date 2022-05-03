@@ -141,18 +141,37 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
         final Entry<AttributeKey<?>, Object>[] currentChildAttrs = newAttributesArray(childAttrs);
         final Collection<ChannelInitializerExtension> extensions = getInitializerExtensions();
 
+        //这里运行完成只是在pipline上添加了一个ChannelInitializer
+        //reactor线程会在注册的是执行ChannelInitializer，执行完成之后会把用添加的handler这里是LoggingHandler添加进来
+        //并且提一个任务, 再把ServerBootstrapAcceptor注册上去
+
+        //初始化NioServerSocketChannel中pipeline的时机是：
+        // 当NioServerSocketChannel注册到Main Reactor之后，绑定端口地址之前。
+        //AbstractUnsafe#register0
         p.addLast(new ChannelInitializer<Channel>() {
+            //addLast
+            //callHandlerCallbackLater
+            //PendingHandlerCallback task = added ? new PendingHandlerAddedTask(ctx)
+            //above will invoked in pipeline.invokeHandlerAddedIfNeeded();
+            // and will invoke handlerAdded
+
+            //method channelRegistered is invoked (when channel registered to Reactor)
             @Override
             public void initChannel(final Channel ch) {
                 final ChannelPipeline pipeline = ch.pipeline();
                 ChannelHandler handler = config.handler();
                 if (handler != null) {
                     pipeline.addLast(handler);
+                    //addLast
+                    //callHandlerCallbackLater
+                    //PendingHandlerCallback task = added ? new PendingHandlerAddedTask(ctx)
+                    //above will invoked in pipeline.invokeHandlerAddedIfNeeded();
                 }
-
+                //添加用于接收客户端连接的Channle
                 ch.eventLoop().execute(new Runnable() {
                     @Override
                     public void run() {
+                        //method channelRead is invoked (when new connection is coming)
                         pipeline.addLast(new ServerBootstrapAcceptor(
                                 ch, currentChildGroup, currentChildHandler, currentChildOptions, currentChildAttrs,
                                 extensions));
@@ -217,13 +236,23 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
             };
         }
 
+        /**
+         * io.netty.channel.nio.AbstractNioMessageChannel.NioMessageUnsafe#read()
+         * io.netty.channel.ChannelPipeline#fireChannelRead(java.lang.Object)
+         *
+         * @param ctx
+         * @param msg
+         */
         @Override
         @SuppressWarnings("unchecked")
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             final Channel child = (Channel) msg;
 
+            //向客户端NioSocketChannel的pipeline中
+            //添加在启动配置类ServerBootstrap中配置的ChannelHandler
             child.pipeline().addLast(childHandler);
 
+            //利用配置的属性初始化客户端NioSocketChannel
             setChannelOptions(child, childOptions, logger);
             setAttributes(child, childAttrs);
 
@@ -238,6 +267,11 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
             }
 
             try {
+                /**
+                 * 1：在Sub Reactor线程组中选择一个Reactor绑定
+                 * 2：将客户端SocketChannel注册到绑定的Reactor上
+                 * 3：SocketChannel注册到sub reactor中的selector上，并监听OP_READ事件
+                 * */
                 childGroup.register(child).addListener(new ChannelFutureListener() {
                     @Override
                     public void operationComplete(ChannelFuture future) throws Exception {

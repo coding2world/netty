@@ -22,6 +22,7 @@ import java.nio.channels.spi.SelectorProvider;
 import java.util.Set;
 
 final class SelectedSelectionKeySetSelector extends Selector {
+//    后续Reactor线程就会直接从io.netty.channel.nio.NioEventLoop#selectedKeys中获取IO就绪的SocketChannel
     private final SelectedSelectionKeySet selectionKeys;
     private final Selector delegate;
 

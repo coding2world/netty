@@ -27,6 +27,7 @@ import io.netty.util.UncheckedBooleanSupplier;
  */
 public abstract class DefaultMaxMessagesRecvByteBufAllocator implements MaxMessagesRecvByteBufAllocator {
     private final boolean ignoreBytesRead;
+    // //每次事件轮询时，最多读取16次
     private volatile int maxMessagesPerRead;
     private volatile boolean respectMaybeMoreData = true;
 
@@ -92,10 +93,19 @@ public abstract class DefaultMaxMessagesRecvByteBufAllocator implements MaxMessa
      */
     public abstract class MaxMessageHandle implements ExtendedHandle {
         private ChannelConfig config;
+        //每次事件轮询时，最多读取16次
+        // //可在启动配置类ServerBootstrap中通过ChannelOption.MAX_MESSAGES_PER_READ选项设置。
         private int maxMessagePerRead;
+        //本次事件轮询总共读取的message数,这里指的是接收连接的数量
         private int totalMessages;
+        //本次事件轮询总共读取的字节数
+       //用于统计在read loop中总共接收到客户端连接上的数据大小
+        //NioSocketChannel使用
         private int totalBytesRead;
+
+        //表示本次read loop 尝试读取多少字节，byteBuffer剩余可写的字节数
         private int attemptedBytesRead;
+        //本次read loop读取到的字节数
         private int lastBytesRead;
         private final boolean respectMaybeMoreData = DefaultMaxMessagesRecvByteBufAllocator.this.respectMaybeMoreData;
         private final UncheckedBooleanSupplier defaultMaybeMoreSupplier = new UncheckedBooleanSupplier() {
@@ -111,12 +121,17 @@ public abstract class DefaultMaxMessagesRecvByteBufAllocator implements MaxMessa
         @Override
         public void reset(ChannelConfig config) {
             this.config = config;
+            //默认每次最多读取16次
+            //.option(ChannelOption.MAX_MESSAGES_PER_READ, 自定义次数)
             maxMessagePerRead = maxMessagesPerRead();
             totalMessages = totalBytesRead = 0;
         }
 
         @Override
         public ByteBuf allocate(ByteBufAllocator alloc) {
+            //AbstractByteBufAllocator
+           //预计下一次分配buffer的容量，一开始为2048
+           //nextReceiveBufferSize;
             return alloc.ioBuffer(guess());
         }
 
@@ -148,6 +163,9 @@ public abstract class DefaultMaxMessagesRecvByteBufAllocator implements MaxMessa
             return config.isAutoRead() &&
                    (!respectMaybeMoreData || maybeMoreDataSupplier.get()) &&
                    totalMessages < maxMessagePerRead && (ignoreBytesRead || totalBytesRead > 0);
+            //server channel: totalMessages < maxMessagePerRead=16 ,ignoreBytesRead = true, totalByteRead always 0
+            //client channel: totalBytesRead > 0 (client channel) ignoreBytesRead = false, totalByteRead actual read
+
         }
 
         @Override
